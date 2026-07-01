@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <OutputType>Exe</OutputType>
+    <AssemblyName>analyzer</AssemblyName>
+    <RootNamespace>DnSpy.Analyzer.Cli</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <ProjectReference Include="..\DnSpy.Analyzer.Core\DnSpy.Analyzer.Core.csproj" />
+  </ItemGroup>
+
+</Project>

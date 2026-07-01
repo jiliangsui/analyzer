@@ -1,0 +1,15 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <AssemblyName>DnSpy.Analyzer.Core</AssemblyName>
+    <RootNamespace>DnSpy.Analyzer.Core</RootNamespace>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
+    <PackageReference Include="ICSharpCode.Decompiler" Version="8.2.0.7535" />
+  </ItemGroup>
+
+</Project>
