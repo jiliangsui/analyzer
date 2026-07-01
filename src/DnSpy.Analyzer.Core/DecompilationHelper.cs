@@ -2,6 +2,8 @@ using System;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection.Metadata;
+using System.Reflection.PortableExecutable;
 using DnSpy.Analyzer.Core.Models;
 
 namespace DnSpy.Analyzer.Core
@@ -48,43 +50,55 @@ namespace DnSpy.Analyzer.Core
                 if (!_decompilerAvailable)
                     return AnalysisResult<DecompileResult>.Fail("ICSharpCode.Decompiler not available", sw.ElapsedMilliseconds);
 
-                // Create CSharpDecompiler instance via reflection
+                // Find the method handle using System.Reflection.Metadata
+                EntityHandle? methodHandle = null;
+                using (var fs = new FileStream(path, FileMode.Open, FileAccess.Read))
+                using (var peReader = new PEReader(fs, PEStreamOptions.PrefetchEntireImage))
+                {
+                    if (!peReader.HasMetadata)
+                        return AnalysisResult<DecompileResult>.Fail("Not a .NET assembly", sw.ElapsedMilliseconds);
+
+                    var md = peReader.GetMetadataReader();
+
+                    // Find the type
+                    TypeDefinitionHandle? typeHandle = null;
+                    foreach (var tdh in md.TypeDefinitions)
+                    {
+                        var td = md.GetTypeDefinition(tdh);
+                        var ns = md.GetString(td.Namespace);
+                        var name = md.GetString(td.Name);
+                        var fn = string.IsNullOrEmpty(ns) ? name : ns + "." + name;
+                        if (fn.Equals(typeFullName, StringComparison.OrdinalIgnoreCase))
+                        { typeHandle = tdh; break; }
+                    }
+
+                    if (typeHandle == null)
+                        return AnalysisResult<DecompileResult>.Fail($"Type not found: {typeFullName}", sw.ElapsedMilliseconds);
+
+                    // Find the method within the type
+                    var typeDef = md.GetTypeDefinition(typeHandle.Value);
+                    foreach (var mh in typeDef.GetMethods())
+                    {
+                        var m = md.GetMethodDefinition(mh);
+                        var mn = md.GetString(m.Name);
+                        if (mn.Equals(methodName, StringComparison.OrdinalIgnoreCase))
+                        { methodHandle = mh; break; }
+                    }
+                }
+
+                if (methodHandle == null)
+                    return AnalysisResult<DecompileResult>.Fail($"Method '{methodName}' not found in {typeFullName}", sw.ElapsedMilliseconds);
+
+                // Create CSharpDecompiler and decompile the method directly
                 var settings = Activator.CreateInstance(_decompilerSettingsType!);
                 var decompiler = Activator.CreateInstance(_csharpDecompilerType!, new object[] { path, settings });
 
-                // Get type system
-                var tsProp = _csharpDecompilerType!.GetProperty("TypeSystem");
-                var typeSystem = tsProp!.GetValue(decompiler);
-                var mainMod = typeSystem!.GetType().GetProperty("MainModule")!.GetValue(typeSystem);
-                var typeDefs = mainMod!.GetType().GetProperty("TypeDefinitions")!.GetValue(mainMod) as System.Collections.IEnumerable;
+                // Call Decompile(EntityHandle[]) — takes an array of handles
+                var decompileMethod = _csharpDecompilerType!.GetMethod("Decompile", new[] { typeof(EntityHandle[]) });
+                if (decompileMethod == null)
+                    return AnalysisResult<DecompileResult>.Fail("Decompile(EntityHandle) method not found", sw.ElapsedMilliseconds);
 
-                // Find the type
-                object? typeDef = null;
-                foreach (var t in typeDefs!)
-                {
-                    var fn = t.GetType().GetProperty("FullName")!.GetValue(t) as string;
-                    if (fn != null && fn.Equals(typeFullName, StringComparison.OrdinalIgnoreCase))
-                    { typeDef = t; break; }
-                }
-                if (typeDef == null)
-                    return AnalysisResult<DecompileResult>.Fail($"Type not found: {typeFullName}", sw.ElapsedMilliseconds);
-
-                // Find the method
-                object? methodDef = null;
-                var methods = typeDef.GetType().GetProperty("Methods")!.GetValue(typeDef) as System.Collections.IEnumerable;
-                foreach (var m in methods!)
-                {
-                    var mn = m.GetType().GetProperty("Name")!.GetValue(m) as string;
-                    if (mn != null && mn.Equals(methodName, StringComparison.OrdinalIgnoreCase))
-                    { methodDef = m; break; }
-                }
-                if (methodDef == null)
-                    return AnalysisResult<DecompileResult>.Fail($"Method '{methodName}' not found", sw.ElapsedMilliseconds);
-
-                // Get metadata token and decompile
-                var metaToken = methodDef.GetType().GetProperty("MetadataToken")!.GetValue(methodDef);
-                var decompileMethod = _csharpDecompilerType.GetMethod("Decompile", new[] { metaToken!.GetType() });
-                var syntaxTree = decompileMethod!.Invoke(decompiler, new[] { metaToken });
+                var syntaxTree = decompileMethod.Invoke(decompiler, new object[] { new EntityHandle[] { methodHandle!.Value } });
                 var code = syntaxTree!.ToString();
 
                 return AnalysisResult<DecompileResult>.Ok(new DecompileResult
@@ -118,7 +132,7 @@ namespace DnSpy.Analyzer.Core
                     var decompiler = Activator.CreateInstance(_csharpDecompilerType!, new object[] { path, settings });
 
                     // Create FullTypeName
-                    var fullTypeNameType = _csharpDecompilerType.Assembly.GetType("ICSharpCode.Decompiler.FullTypeName");
+                    var fullTypeNameType = _csharpDecompilerType.Assembly.GetType("ICSharpCode.Decompiler.TypeSystem.FullTypeName");
                     var ftn = Activator.CreateInstance(fullTypeNameType!, new object[] { typeFullName });
                     var code = (string)decompileTypeAsString.Invoke(decompiler, new[] { ftn });
                     return AnalysisResult<DecompileResult>.Ok(new DecompileResult { CSharpCode = code, TypeName = typeFullName }, sw.ElapsedMilliseconds);

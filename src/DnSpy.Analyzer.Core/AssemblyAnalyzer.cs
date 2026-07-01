@@ -356,10 +356,13 @@ namespace DnSpy.Analyzer.Core
                 {
                     var m = md.GetMethodDefinition(mh);
                     var mName = md.GetString(m.Name);
+                    var sig = m.DecodeSignature(
+                        new DisassemblingSignatureTypeProvider(), default);
                     methods.Add(new MethodDetail
                     {
                         Name = mName,
                         FullSignature = mName,
+                        ReturnType = sig.ReturnType,
                         AccessLevel = GetMethodAccess(m),
                         IsStatic = (m.Attributes & MethodAttributes.Static) != 0,
                         IsVirtual = (m.Attributes & MethodAttributes.Virtual) != 0,
