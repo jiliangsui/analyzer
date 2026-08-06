@@ -1,7 +1,6 @@
 using System;
 using System.IO;
 using System.Text.Json;
-using System.Threading.Tasks;
 using DnSpy.Analyzer.Core;
 using DnSpy.Analyzer.Core.Models;
 
@@ -29,7 +28,7 @@ namespace DnSpy.Analyzer.Cli
             WriteIndented = false
         };
 
-        static async Task<int> Main(string[] args)
+        static int Main(string[] args)
         {
             if (args.Length == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h")
             {
@@ -45,13 +44,13 @@ namespace DnSpy.Analyzer.Cli
                 var json = command switch
                 {
                     "scan-folder" => HandleScanFolder(rest),
-                    "analyze-assembly" => await HandleAnalyzeAssembly(rest),
-                    "list-types" => await HandleListTypes(rest),
-                    "get-type" => await HandleGetType(rest),
-                    "get-methods" => await HandleGetMethods(rest),
-                    "decompile-method" => await HandleDecompileMethod(rest),
-                    "decompile-type" => await HandleDecompileType(rest),
-                    "search" => await HandleSearch(rest),
+                    "analyze-assembly" => HandleAnalyzeAssembly(rest),
+                    "list-types" => HandleListTypes(rest),
+                    "get-type" => HandleGetType(rest),
+                    "get-methods" => HandleGetMethods(rest),
+                    "decompile-method" => HandleDecompileMethod(rest),
+                    "decompile-type" => HandleDecompileType(rest),
+                    "search" => HandleSearch(rest),
                     _ => Json(AnalysisResult<object>.Fail($"Unknown command: {command}", 0))
                 };
 
@@ -79,14 +78,13 @@ namespace DnSpy.Analyzer.Cli
             return Json(new AssemblyAnalyzer().ScanFolder(path, recursive));
         }
 
-        static async Task<string> HandleAnalyzeAssembly(string[] args)
+        static string HandleAnalyzeAssembly(string[] args)
         {
             if (args.Length == 0) return Error("Usage: analyzer analyze-assembly <path>");
-            var analyzer = new AssemblyAnalyzer();
-            return await Task.Run(() => Json(analyzer.AnalyzeAssembly(args[0])));
+            return Json(new AssemblyAnalyzer().AnalyzeAssembly(args[0]));
         }
 
-        static async Task<string> HandleListTypes(string[] args)
+        static string HandleListTypes(string[] args)
         {
             if (args.Length == 0) return Error("Usage: analyzer list-types <path> [--namespace <ns>] [--offset <n>] [--limit <n>]");
             var path = args[0];
@@ -98,39 +96,36 @@ namespace DnSpy.Analyzer.Cli
                 else if (args[i] == "--offset" && i + 1 < args.Length) int.TryParse(args[++i], out offset);
                 else if (args[i] == "--limit" && i + 1 < args.Length) int.TryParse(args[++i], out limit);
             }
-            var analyzer = new AssemblyAnalyzer();
-            return await Task.Run(() => Json(analyzer.ListTypes(path, ns, offset, limit)));
+            return Json(new AssemblyAnalyzer().ListTypes(path, ns, offset, limit));
         }
 
-        static async Task<string> HandleGetType(string[] args)
+        static string HandleGetType(string[] args)
         {
             if (args.Length < 2) return Error("Usage: analyzer get-type <path> <type-name>");
-            var analyzer = new AssemblyAnalyzer();
-            return await Task.Run(() => Json(analyzer.GetTypeDetail(args[0], args[1])));
+            return Json(new AssemblyAnalyzer().GetTypeDetail(args[0], args[1]));
         }
 
-        static async Task<string> HandleGetMethods(string[] args)
+        static string HandleGetMethods(string[] args)
         {
             if (args.Length < 2) return Error("Usage: analyzer get-methods <path> <type-name>");
-            var analyzer = new AssemblyAnalyzer();
-            return await Task.Run(() => Json(analyzer.ListMethods(args[0], args[1])));
+            return Json(new AssemblyAnalyzer().ListMethods(args[0], args[1]));
         }
 
-        static async Task<string> HandleDecompileMethod(string[] args)
+        static string HandleDecompileMethod(string[] args)
         {
             if (args.Length < 3) return Error("Usage: analyzer decompile-method <path> <type-name> <method-name>");
             using var decompiler = new DecompilationHelper();
-            return await Task.Run(() => Json(decompiler.DecompileMethod(args[0], args[1], args[2])));
+            return Json(decompiler.DecompileMethod(args[0], args[1], args[2]));
         }
 
-        static async Task<string> HandleDecompileType(string[] args)
+        static string HandleDecompileType(string[] args)
         {
             if (args.Length < 2) return Error("Usage: analyzer decompile-type <path> <type-name>");
             using var decompiler = new DecompilationHelper();
-            return await Task.Run(() => Json(decompiler.DecompileType(args[0], args[1])));
+            return Json(decompiler.DecompileType(args[0], args[1]));
         }
 
-        static async Task<string> HandleSearch(string[] args)
+        static string HandleSearch(string[] args)
         {
             if (args.Length < 2) return Error("Usage: analyzer search <path> <query> [--kind <kind>] [--max-results <n>]");
             var path = args[0];
@@ -153,8 +148,7 @@ namespace DnSpy.Analyzer.Cli
                 else if (args[i] == "--max-results" && i + 1 < args.Length)
                     int.TryParse(args[++i], out maxResults);
             }
-            var searcher = new SearchService();
-            return await Task.Run(() => Json(searcher.Search(path, query, kind, maxResults)));
+            return Json(new SearchService().Search(path, query, kind, maxResults));
         }
 
         // ========== Helpers ==========

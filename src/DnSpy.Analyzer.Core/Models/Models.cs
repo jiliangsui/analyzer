@@ -69,7 +69,7 @@ namespace DnSpy.Analyzer.Core.Models
         public string Name { get; set; } = "";
         public string FullSignature { get; set; } = "";
         public string ReturnType { get; set; } = "";
-        public List<ParameterInfo> Parameters { get; set; } = new();
+        public List<ParameterDetail> Parameters { get; set; } = new();
         public List<string> GenericParameters { get; set; } = new();
         public string AccessLevel { get; set; } = "";
         public bool IsStatic { get; set; }
@@ -83,7 +83,7 @@ namespace DnSpy.Analyzer.Core.Models
         public List<string> Attributes { get; set; } = new();
     }
 
-    public class ParameterInfo
+    public class ParameterDetail
     {
         public string Name { get; set; } = "";
         public string Type { get; set; } = "";

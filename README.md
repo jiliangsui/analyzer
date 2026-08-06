@@ -179,7 +179,7 @@ decompile-method Player TakeDamage  →  得到 C# 源码
 |------|------|--------|
 | [ICSharpCode.Decompiler](https://github.com/icsharpcode/ILSpy) | C# 反编译引擎 | MIT |
 | System.Reflection.Metadata | PE/元数据读取（.NET 内置） | MIT |
-| Newtonsoft.Json | JSON 序列化 | MIT |
+| System.Text.Json | JSON 序列化（.NET 内置） | MIT |
 
 > 本工具**不依赖、不修改、不包含**原始 dnSpy GUI 的任何代码，仅借鉴了其反编译的技术思路。原始 dnSpy ([GitHub](https://github.com/dnSpy/dnSpy)) 是 GPLv3 开源项目。
 

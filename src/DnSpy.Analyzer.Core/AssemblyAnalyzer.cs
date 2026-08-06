@@ -50,6 +50,7 @@ namespace DnSpy.Analyzer.Core
                             IsDotNet = true,
                             FileSize = new FileInfo(file).Length,
                             Architecture = peReader.PEHeaders.PEHeader?.Magic == PEMagic.PE32Plus ? "x64" : "x86",
+                            RuntimeVersion = GetRuntimeVersion(peReader),
                         };
 
                         if (!mdReader.IsAssembly)
@@ -87,13 +88,6 @@ namespace DnSpy.Analyzer.Core
             }
         }
 
-        private static MetadataReader GetReader(string path)
-        {
-            var fs = new FileStream(path, FileMode.Open, FileAccess.Read);
-            var peReader = new PEReader(fs, PEStreamOptions.PrefetchEntireImage | PEStreamOptions.LeaveOpen);
-            return peReader.GetMetadataReader();
-        }
-
         public AnalysisResult<AssemblyDetail> AnalyzeAssembly(string path)
         {
             var sw = Stopwatch.StartNew();
@@ -117,6 +111,7 @@ namespace DnSpy.Analyzer.Core
                         IsManaged = true,
                         IsDotNet = true,
                         FileSize = new FileInfo(path).Length,
+                        RuntimeVersion = GetRuntimeVersion(peReader),
                     },
                     Dependencies = new List<AssemblyDependency>()
                 };
@@ -148,7 +143,7 @@ namespace DnSpy.Analyzer.Core
                 foreach (var tdh in md.TypeDefinitions)
                 {
                     var td = md.GetTypeDefinition(tdh);
-                    if ((td.Attributes & TypeAttributes.NestedFamANDAssem) != 0) continue; // skip nested
+                    if (IsNested(td)) continue; // skip nested
                     if (td.Name.IsNil) continue;
 
                     var ns = md.GetString(td.Namespace);
@@ -197,14 +192,14 @@ namespace DnSpy.Analyzer.Core
                         continue;
 
                     // Skip nested types for top-level listing
-                    bool isNested = (td.Attributes & TypeAttributes.NestedFamANDAssem) != 0;
+                    bool isNested = IsNested(td);
 
                     types.Add(new TypeBrief
                     {
                         FullName = (string.IsNullOrEmpty(ns) ? "" : ns + ".") + md.GetString(td.Name),
                         Name = md.GetString(td.Name),
                         Namespace = ns,
-                        Kind = GetTypeKind(td),
+                        Kind = GetTypeKind(md, td),
                         AccessLevel = GetAccessLevel(td),
                         MethodCount = td.GetMethods().Count,
                         FieldCount = td.GetFields().Count,
@@ -246,23 +241,19 @@ namespace DnSpy.Analyzer.Core
                 var detail = new TypeDetail
                 {
                     FullName = (string.IsNullOrEmpty(ns) ? "" : ns + ".") + name,
-                    Kind = GetTypeKind(typeDef),
+                    Kind = GetTypeKind(md, typeDef),
                     AccessLevel = GetAccessLevel(typeDef),
                     IsSealed = (typeDef.Attributes & TypeAttributes.Sealed) != 0,
                     IsAbstract = (typeDef.Attributes & TypeAttributes.Abstract) != 0,
                     IsStatic = (typeDef.Attributes & (TypeAttributes.Abstract | TypeAttributes.Sealed)) == (TypeAttributes.Abstract | TypeAttributes.Sealed),
                 };
 
-                // Base type
+                // Base type (may be a definition, reference, or generic specification)
                 if (!typeDef.BaseType.IsNil)
                 {
-                    var bt = md.GetTypeDefinition((TypeDefinitionHandle)typeDef.BaseType);
-                    // For base types that are references, we try to get a reasonable name
                     try
                     {
-                        var btHandle = (TypeDefinitionHandle)typeDef.BaseType;
-                        var btDef = md.GetTypeDefinition(btHandle);
-                        detail.BaseType = md.GetString(btDef.Namespace) + "." + md.GetString(btDef.Name);
+                        detail.BaseType = GetTypeName(md, typeDef.BaseType);
                     }
                     catch
                     {
@@ -270,26 +261,33 @@ namespace DnSpy.Analyzer.Core
                     }
                 }
 
+                // Declaring type (for nested types)
+                var declaringHandle = typeDef.GetDeclaringType();
+                if (!declaringHandle.IsNil)
+                {
+                    var declaring = md.GetTypeDefinition(declaringHandle);
+                    detail.DeclaringType = FormatTypeName(md.GetString(declaring.Namespace), md.GetString(declaring.Name));
+                }
+
+                // Implemented interfaces
+                foreach (var iih in typeDef.GetInterfaceImplementations())
+                {
+                    var impl = md.GetInterfaceImplementation(iih);
+                    if (impl.Interface.IsNil) continue;
+                    try { detail.Interfaces.Add(GetTypeName(md, impl.Interface)); } catch { }
+                }
+
+                // Nested types
+                foreach (var nth in md.TypeDefinitions)
+                {
+                    var ntd = md.GetTypeDefinition(nth);
+                    if (ntd.GetDeclaringType() == typeHandle)
+                        detail.NestedTypes.Add(md.GetString(ntd.Name));
+                }
+
                 // Methods
                 foreach (var mh in typeDef.GetMethods())
-                {
-                    var m = md.GetMethodDefinition(mh);
-                    var mName = md.GetString(m.Name);
-                    detail.Methods.Add(new MethodDetail
-                    {
-                        Name = mName,
-                        FullSignature = mName,
-                        ReturnType = m.DecodeSignature(new DisassemblingSignatureTypeProvider(), default).ReturnType,
-                        AccessLevel = GetMethodAccess(m),
-                        IsStatic = (m.Attributes & MethodAttributes.Static) != 0,
-                        IsVirtual = (m.Attributes & MethodAttributes.Virtual) != 0,
-                        IsAbstract = (m.Attributes & MethodAttributes.Abstract) != 0,
-                        IsSealed = (m.Attributes & MethodAttributes.Final) != 0,
-                        IsConstructor = mName == ".ctor" || mName == ".cctor",
-                        IsGetter = mName.StartsWith("get_"),
-                        IsSetter = mName.StartsWith("set_"),
-                    });
-                }
+                    detail.Methods.Add(BuildMethodDetail(md, md.GetMethodDefinition(mh)));
 
                 // Fields
                 foreach (var fh in typeDef.GetFields())
@@ -353,27 +351,7 @@ namespace DnSpy.Analyzer.Core
 
                 var methods = new List<MethodDetail>();
                 foreach (var mh in td.GetMethods())
-                {
-                    var m = md.GetMethodDefinition(mh);
-                    var mName = md.GetString(m.Name);
-                    var sig = m.DecodeSignature(
-                        new DisassemblingSignatureTypeProvider(), default);
-                    methods.Add(new MethodDetail
-                    {
-                        Name = mName,
-                        FullSignature = mName,
-                        ReturnType = sig.ReturnType,
-                        AccessLevel = GetMethodAccess(m),
-                        IsStatic = (m.Attributes & MethodAttributes.Static) != 0,
-                        IsVirtual = (m.Attributes & MethodAttributes.Virtual) != 0,
-                        IsAbstract = (m.Attributes & MethodAttributes.Abstract) != 0,
-                        IsOverride = (m.Attributes & MethodAttributes.Virtual) != 0 &&
-                                     (m.Attributes & MethodAttributes.NewSlot) == 0,
-                        IsConstructor = mName == ".ctor" || mName == ".cctor",
-                        IsGetter = mName.StartsWith("get_"),
-                        IsSetter = mName.StartsWith("set_"),
-                    });
-                }
+                    methods.Add(BuildMethodDetail(md, md.GetMethodDefinition(mh)));
 
                 return AnalysisResult<List<MethodDetail>>.Ok(methods, sw.ElapsedMilliseconds);
             }
@@ -383,7 +361,7 @@ namespace DnSpy.Analyzer.Core
             }
         }
 
-        private static (TypeDefinitionHandle, TypeDefinition) FindType(MetadataReader md, string fullName)
+        internal static TypeDefinitionHandle FindTypeHandle(MetadataReader md, string fullName)
         {
             foreach (var tdh in md.TypeDefinitions)
             {
@@ -392,23 +370,129 @@ namespace DnSpy.Analyzer.Core
                 var name = md.GetString(td.Name);
                 var fn = string.IsNullOrEmpty(ns) ? name : ns + "." + name;
                 if (fn.Equals(fullName, StringComparison.OrdinalIgnoreCase))
-                    return (tdh, td);
+                    return tdh;
             }
-            return (default, default);
+            return default;
+        }
+
+        internal static MethodDefinitionHandle FindMethodHandle(MetadataReader md, TypeDefinitionHandle typeHandle, string methodName)
+        {
+            var td = md.GetTypeDefinition(typeHandle);
+            foreach (var mh in td.GetMethods())
+            {
+                var m = md.GetMethodDefinition(mh);
+                if (md.GetString(m.Name).Equals(methodName, StringComparison.OrdinalIgnoreCase))
+                    return mh;
+            }
+            return default;
+        }
+
+        private static (TypeDefinitionHandle, TypeDefinition) FindType(MetadataReader md, string fullName)
+        {
+            var handle = FindTypeHandle(md, fullName);
+            if (handle.IsNil) return (default, default);
+            return (handle, md.GetTypeDefinition(handle));
         }
 
         #region Helpers
 
-        private static string GetTypeKind(TypeDefinition td)
+        private static bool IsNested(TypeDefinition td) =>
+            (td.Attributes & TypeAttributes.VisibilityMask) >= TypeAttributes.NestedPublic;
+
+        private static string GetTypeName(MetadataReader md, EntityHandle handle)
+        {
+            switch (handle.Kind)
+            {
+                case HandleKind.TypeDefinition:
+                    var td = md.GetTypeDefinition((TypeDefinitionHandle)handle);
+                    return FormatTypeName(md.GetString(td.Namespace), md.GetString(td.Name));
+                case HandleKind.TypeReference:
+                    var tr = md.GetTypeReference((TypeReferenceHandle)handle);
+                    return FormatTypeName(md.GetString(tr.Namespace), md.GetString(tr.Name));
+                case HandleKind.TypeSpecification:
+                    var ts = md.GetTypeSpecification((TypeSpecificationHandle)handle);
+                    return ts.DecodeSignature(new DisassemblingSignatureTypeProvider(), default);
+                default:
+                    return "[unknown]";
+            }
+        }
+
+        private static string FormatTypeName(string ns, string name) =>
+            string.IsNullOrEmpty(ns) ? name : ns + "." + name;
+
+        private static string GetRuntimeVersion(PEReader peReader)
+        {
+            try
+            {
+                var span = peReader.GetMetadata().GetContent().AsSpan();
+                if (span.Length < 16) return "";
+                var length = BitConverter.ToInt32(span.Slice(12, 4));
+                if (length <= 0 || span.Length < 16 + length) return "";
+                var version = System.Text.Encoding.UTF8.GetString(span.Slice(16, length));
+                var nul = version.IndexOf('\0');
+                if (nul >= 0) version = version.Substring(0, nul);
+                return version.Trim();
+            }
+            catch
+            {
+                return "";
+            }
+        }
+
+        private static MethodDetail BuildMethodDetail(MetadataReader md, MethodDefinition m)
+        {
+            var name = md.GetString(m.Name);
+            var sig = m.DecodeSignature(new DisassemblingSignatureTypeProvider(), default);
+
+            var parameters = new List<ParameterDetail>();
+            foreach (var ph in m.GetParameters())
+            {
+                var p = md.GetParameter(ph);
+                var type = p.SequenceNumber > 0 && p.SequenceNumber <= sig.ParameterTypes.Length
+                    ? sig.ParameterTypes[p.SequenceNumber - 1]
+                    : "";
+                var pName = md.GetString(p.Name);
+                var isByRef = type.StartsWith("ref ", StringComparison.Ordinal);
+                parameters.Add(new ParameterDetail
+                {
+                    Name = pName,
+                    Type = type,
+                    IsOut = (p.Attributes & ParameterAttributes.Out) != 0,
+                    IsRef = isByRef && (p.Attributes & ParameterAttributes.Out) == 0,
+                });
+            }
+
+            var signature = $"{sig.ReturnType} {name}({string.Join(", ", sig.ParameterTypes)})";
+            return new MethodDetail
+            {
+                Name = name,
+                FullSignature = signature,
+                ReturnType = sig.ReturnType,
+                Parameters = parameters,
+                AccessLevel = GetMethodAccess(m),
+                IsStatic = (m.Attributes & MethodAttributes.Static) != 0,
+                IsVirtual = (m.Attributes & MethodAttributes.Virtual) != 0,
+                IsAbstract = (m.Attributes & MethodAttributes.Abstract) != 0,
+                IsOverride = (m.Attributes & MethodAttributes.Virtual) != 0 &&
+                             (m.Attributes & MethodAttributes.NewSlot) == 0,
+                IsSealed = (m.Attributes & MethodAttributes.Final) != 0,
+                IsConstructor = name == ".ctor" || name == ".cctor",
+                IsGetter = name.StartsWith("get_"),
+                IsSetter = name.StartsWith("set_"),
+            };
+        }
+
+        private static string GetTypeKind(MetadataReader md, TypeDefinition td)
         {
             if ((td.Attributes & TypeAttributes.Interface) != 0) return "Interface";
-            if ((td.Attributes & TypeAttributes.Class) != 0)
+            if (td.BaseType.IsNil) return "Class";
+            return GetTypeName(md, td.BaseType) switch
             {
-                // Check if it's a value type (struct)
-                // For simplicity, check base type
-                return "Class"; // simplified - SRM doesn't easily differentiate struct/enum
-            }
-            return "Class";
+                "System.Enum" => "Enum",
+                "System.ValueType" => "Struct",
+                "System.MulticastDelegate" => "Delegate",
+                _ => "Class"
+            };
         }
 
         private static string GetAccessLevel(TypeDefinition td)
@@ -448,11 +532,6 @@ namespace DnSpy.Analyzer.Core
                 FieldAttributes.Assembly => "internal",
                 _ => ""
             };
-        }
-
-        private static string GetTypeNameFromSignature(MetadataReader md, string sig)
-        {
-            return sig;
         }
 
         class DisassemblingSignatureTypeProvider : ISignatureTypeProvider<string, object?>
