@@ -16,8 +16,8 @@
 ## ✨ 特性
 
 - **🔬 程序集扫描** — 一键扫描目录，自动识别 .NET 程序集，跳过非托管 DLL
-- **📋 元数据分析** — 版本、依赖、命名空间分布、类型数量即时获取
-- **📂 类型浏览** — 按命名空间过滤、分页查看，基类/接口/成员一目了然
+- **📋 元数据分析** — 版本、运行时、依赖、命名空间分布、类型数量即时获取
+- **📂 类型浏览** — 按命名空间过滤、分页查看，基类/接口/嵌套类型/成员一目了然
 - **🛠️ 方法反编译** — 基于 ILSpy 引擎，将 IL 还原为可读 C# 源码
 - **🔎 智能搜索** — 按类型名、方法名、字段名、属性名快速定位目标
 - **🤖 AI Agent 原生** — JSON 标准输出，零配置，直接集成
@@ -227,16 +227,6 @@ analyzer/
 ```
 
 ## ❓ 常见问题
-
-<details>
-<summary><b>decompile-method 提示 "ICSharpCode.Decompiler not available"？</b></summary>
-
-确保 NuGet 包已还原：
-
-```bash
-dotnet restore src/DnSpy.Analyzer.Core/DnSpy.Analyzer.Core.csproj
-```
-</details>
 
 <details>
 <summary><b>能分析非托管（native）DLL 吗？</b></summary>
