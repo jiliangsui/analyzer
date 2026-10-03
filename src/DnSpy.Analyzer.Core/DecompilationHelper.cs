@@ -76,6 +76,12 @@ namespace DnSpy.Analyzer.Core
         private CSharpDecompiler CreateDecompiler(string path)
         {
             var settings = new DecompilerSettings();
+
+            // The resolver returns null for unresolvable references; this setting keeps
+            // ILSpy from aborting the whole decompilation because of them — the affected
+            // members just render with unresolved identifiers instead.
+            settings.ThrowOnAssemblyResolveErrors = false;
+
             var resolver = BuildResolver(path);
             return new CSharpDecompiler(path, resolver, settings);
         }
@@ -174,7 +180,7 @@ namespace DnSpy.Analyzer.Core
             }
         }
 
-        public AnalysisResult<DecompileResult> DecompileMethod(string path, string typeFullName, string methodName)
+        public AnalysisResult<DecompileResult> DecompileMethod(string path, string typeFullName, string methodName, string signatureFilter = null)
         {
             var sw = Stopwatch.StartNew();
             try
@@ -192,12 +198,35 @@ namespace DnSpy.Analyzer.Core
                 if (typeHandle.IsNil)
                     return AnalysisResult<DecompileResult>.Fail($"Type not found: {typeFullName}", sw.ElapsedMilliseconds);
 
-                var methodHandle = AssemblyAnalyzer.FindMethodHandle(md, typeHandle, methodName);
-                if (methodHandle.IsNil)
+                var candidates = AssemblyAnalyzer.FindMethodHandles(md, typeHandle, methodName)
+                    .Select(h => (Handle: h, Detail: AssemblyAnalyzer.BuildMethodDetail(md, md.GetMethodDefinition(h))))
+                    .ToList();
+                if (candidates.Count == 0)
                     return AnalysisResult<DecompileResult>.Fail($"Method '{methodName}' not found in {typeFullName}", sw.ElapsedMilliseconds);
 
+                List<(MethodDefinitionHandle Handle, MethodDetail Detail)> selected;
+                if (string.IsNullOrEmpty(signatureFilter))
+                {
+                    selected = candidates;
+                }
+                else
+                {
+                    selected = candidates
+                        .Where(x => x.Detail.FullSignature.IndexOf(signatureFilter, StringComparison.OrdinalIgnoreCase) >= 0)
+                        .ToList();
+                    if (selected.Count == 0)
+                        return AnalysisResult<DecompileResult>.Fail(
+                            $"No overload of '{methodName}' matches signature filter '{signatureFilter}'. " +
+                            $"Candidates: {RenderCandidates(candidates)}", sw.ElapsedMilliseconds);
+                }
+
+                if (selected.Count > 1)
+                    return AnalysisResult<DecompileResult>.Fail(
+                        $"'{methodName}' has {selected.Count} overloads in {typeFullName}; " +
+                        $"disambiguate with --signature. Candidates: {RenderCandidates(selected)}", sw.ElapsedMilliseconds);
+
                 var decompiler = CreateDecompiler(path);
-                var code = decompiler.Decompile(new[] { (EntityHandle)methodHandle }).ToString();
+                var code = decompiler.Decompile(new[] { (EntityHandle)selected[0].Handle }).ToString();
 
                 return AnalysisResult<DecompileResult>.Ok(new DecompileResult
                 {
@@ -220,8 +249,21 @@ namespace DnSpy.Analyzer.Core
                 if (!File.Exists(path))
                     return AnalysisResult<DecompileResult>.Fail($"File not found: {path}", sw.ElapsedMilliseconds);
 
+                // Resolve the type first so dotted nested names ("Ns.Outer.Inner") work,
+                // then build the ILSpy FullTypeName ("Ns.Outer/Inner") from the definition.
+                using var fs = new FileStream(path, FileMode.Open, FileAccess.Read);
+                using var peReader = new PEReader(fs, PEStreamOptions.PrefetchEntireImage);
+                if (!peReader.HasMetadata)
+                    return AnalysisResult<DecompileResult>.Fail("Not a .NET assembly", sw.ElapsedMilliseconds);
+
+                var md = peReader.GetMetadataReader();
+                var typeHandle = AssemblyAnalyzer.FindTypeHandle(md, typeFullName);
+                if (typeHandle.IsNil)
+                    return AnalysisResult<DecompileResult>.Fail($"Type not found: {typeFullName}", sw.ElapsedMilliseconds);
+
                 var decompiler = CreateDecompiler(path);
-                var code = decompiler.DecompileTypeAsString(new FullTypeName(typeFullName));
+                var ilSpyName = AssemblyAnalyzer.GetILSpyFullTypeName(md, md.GetTypeDefinition(typeHandle));
+                var code = decompiler.DecompileTypeAsString(new FullTypeName(ilSpyName));
 
                 return AnalysisResult<DecompileResult>.Ok(new DecompileResult
                 {
@@ -234,6 +276,9 @@ namespace DnSpy.Analyzer.Core
                 return AnalysisResult<DecompileResult>.Fail($"Type decompilation failed: {ex.Message}", sw.ElapsedMilliseconds);
             }
         }
+
+        private static string RenderCandidates(List<(MethodDefinitionHandle Handle, MethodDetail Detail)> candidates) =>
+            string.Join(" | ", candidates.Select(x => x.Detail.FullSignature));
 
         public AnalysisResult<string> GetILText(string path, string typeFullName, string methodName)
         {

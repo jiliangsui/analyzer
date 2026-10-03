@@ -111,6 +111,7 @@ namespace DnSpy.Analyzer.Core
                         IsManaged = true,
                         IsDotNet = true,
                         FileSize = new FileInfo(path).Length,
+                        Architecture = peReader.PEHeaders.PEHeader?.Magic == PEMagic.PE32Plus ? "x64" : "x86",
                         RuntimeVersion = GetRuntimeVersion(peReader),
                     },
                     Dependencies = new List<AssemblyDependency>()
@@ -186,17 +187,19 @@ namespace DnSpy.Analyzer.Core
                 {
                     var td = md.GetTypeDefinition(tdh);
                     var ns = md.GetString(td.Namespace);
+                    var dottedName = GetDottedFullTypeName(md, td);
 
+                    // Match on the full dotted name so nested types ("Ns.Outer.Nested")
+                    // survive a namespace filter even though their own Namespace is empty.
                     if (!string.IsNullOrEmpty(namespaceFilter) &&
-                        !ns.StartsWith(namespaceFilter, StringComparison.OrdinalIgnoreCase))
+                        !dottedName.StartsWith(namespaceFilter, StringComparison.OrdinalIgnoreCase))
                         continue;
 
-                    // Skip nested types for top-level listing
                     bool isNested = IsNested(td);
 
-                    types.Add(new TypeBrief
+                    var brief = new TypeBrief
                     {
-                        FullName = (string.IsNullOrEmpty(ns) ? "" : ns + ".") + md.GetString(td.Name),
+                        FullName = dottedName,
                         Name = md.GetString(td.Name),
                         Namespace = ns,
                         Kind = GetTypeKind(md, td),
@@ -206,7 +209,14 @@ namespace DnSpy.Analyzer.Core
                         PropertyCount = td.GetProperties().Count,
                         EventCount = td.GetEvents().Count,
                         IsNested = isNested,
-                    });
+                    };
+                    if (isNested)
+                    {
+                        var declaringHandle = td.GetDeclaringType();
+                        if (!declaringHandle.IsNil)
+                            brief.DeclaringType = GetDottedFullTypeName(md, md.GetTypeDefinition(declaringHandle));
+                    }
+                    types.Add(brief);
                 }
 
                 var paged = types.OrderBy(t => t.FullName).Skip(offset).Take(limit).ToList();
@@ -240,13 +250,22 @@ namespace DnSpy.Analyzer.Core
                 var name = md.GetString(typeDef.Name);
                 var detail = new TypeDetail
                 {
-                    FullName = (string.IsNullOrEmpty(ns) ? "" : ns + ".") + name,
+                    FullName = GetDottedFullTypeName(md, typeDef),
                     Kind = GetTypeKind(md, typeDef),
                     AccessLevel = GetAccessLevel(typeDef),
                     IsSealed = (typeDef.Attributes & TypeAttributes.Sealed) != 0,
                     IsAbstract = (typeDef.Attributes & TypeAttributes.Abstract) != 0,
                     IsStatic = (typeDef.Attributes & (TypeAttributes.Abstract | TypeAttributes.Sealed)) == (TypeAttributes.Abstract | TypeAttributes.Sealed),
                 };
+
+                foreach (var gph in typeDef.GetGenericParameters())
+                    detail.GenericParameters.Add(md.GetString(md.GetGenericParameter(gph).Name));
+
+                foreach (var cah in typeDef.GetCustomAttributes())
+                {
+                    var attrName = GetCustomAttributeName(md, cah);
+                    if (attrName != null) detail.Attributes.Add(attrName);
+                }
 
                 // Base type (may be a definition, reference, or generic specification)
                 if (!typeDef.BaseType.IsNil)
@@ -363,29 +382,51 @@ namespace DnSpy.Analyzer.Core
 
         internal static TypeDefinitionHandle FindTypeHandle(MetadataReader md, string fullName)
         {
+            // Accept both "Ns.Outer.Nested" and ILSpy-style "Ns.Outer/Nested" for nested types.
+            var normalized = fullName.Replace('/', '.').Trim();
             foreach (var tdh in md.TypeDefinitions)
             {
                 var td = md.GetTypeDefinition(tdh);
-                var ns = md.GetString(td.Namespace);
-                var name = md.GetString(td.Name);
-                var fn = string.IsNullOrEmpty(ns) ? name : ns + "." + name;
-                if (fn.Equals(fullName, StringComparison.OrdinalIgnoreCase))
+                if (GetDottedFullTypeName(md, td).Equals(normalized, StringComparison.OrdinalIgnoreCase))
                     return tdh;
             }
             return default;
         }
 
         internal static MethodDefinitionHandle FindMethodHandle(MetadataReader md, TypeDefinitionHandle typeHandle, string methodName)
+            => FindMethodHandles(md, typeHandle, methodName).FirstOrDefault();
+
+        /// <summary>
+        /// All methods of the type matching <paramref name="methodName"/> by name.
+        /// Overload groups are returned together so callers can disambiguate by signature.
+        /// </summary>
+        internal static List<MethodDefinitionHandle> FindMethodHandles(MetadataReader md, TypeDefinitionHandle typeHandle, string methodName)
         {
+            var results = new List<MethodDefinitionHandle>();
             var td = md.GetTypeDefinition(typeHandle);
             foreach (var mh in td.GetMethods())
             {
                 var m = md.GetMethodDefinition(mh);
                 if (md.GetString(m.Name).Equals(methodName, StringComparison.OrdinalIgnoreCase))
-                    return mh;
+                    results.Add(mh);
             }
-            return default;
+            return results;
         }
+
+        /// <summary>ILSpy-style full type name: "Ns.Type", or "Ns.Outer/Nested" with a slash per declaring level.</summary>
+        internal static string GetILSpyFullTypeName(MetadataReader md, TypeDefinition td)
+        {
+            var declaring = td.GetDeclaringType();
+            var name = md.GetString(td.Name);
+            if (!declaring.IsNil)
+                return GetILSpyFullTypeName(md, md.GetTypeDefinition(declaring)) + "/" + name;
+            var ns = md.GetString(td.Namespace);
+            return string.IsNullOrEmpty(ns) ? name : ns + "." + name;
+        }
+
+        /// <summary>Dotted variant ("Ns.Outer.Nested") — the form accepted by get-type / decompile-method / list-types.</summary>
+        internal static string GetDottedFullTypeName(MetadataReader md, TypeDefinition td) =>
+            GetILSpyFullTypeName(md, td).Replace('/', '.');
 
         private static (TypeDefinitionHandle, TypeDefinition) FindType(MetadataReader md, string fullName)
         {
@@ -439,7 +480,7 @@ namespace DnSpy.Analyzer.Core
             }
         }
 
-        private static MethodDetail BuildMethodDetail(MetadataReader md, MethodDefinition m)
+        internal static MethodDetail BuildMethodDetail(MetadataReader md, MethodDefinition m)
         {
             var name = md.GetString(m.Name);
             var sig = m.DecodeSignature(new DisassemblingSignatureTypeProvider(), default);
@@ -462,6 +503,17 @@ namespace DnSpy.Analyzer.Core
                 });
             }
 
+            var genericParameters = new List<string>();
+            foreach (var gph in m.GetGenericParameters())
+                genericParameters.Add(md.GetString(md.GetGenericParameter(gph).Name));
+
+            var attributes = new List<string>();
+            foreach (var cah in m.GetCustomAttributes())
+            {
+                var attrName = GetCustomAttributeName(md, cah);
+                if (attrName != null) attributes.Add(attrName);
+            }
+
             var signature = $"{sig.ReturnType} {name}({string.Join(", ", sig.ParameterTypes)})";
             return new MethodDetail
             {
@@ -469,6 +521,7 @@ namespace DnSpy.Analyzer.Core
                 FullSignature = signature,
                 ReturnType = sig.ReturnType,
                 Parameters = parameters,
+                GenericParameters = genericParameters,
                 AccessLevel = GetMethodAccess(m),
                 IsStatic = (m.Attributes & MethodAttributes.Static) != 0,
                 IsVirtual = (m.Attributes & MethodAttributes.Virtual) != 0,
@@ -479,7 +532,46 @@ namespace DnSpy.Analyzer.Core
                 IsConstructor = name == ".ctor" || name == ".cctor",
                 IsGetter = name.StartsWith("get_"),
                 IsSetter = name.StartsWith("set_"),
+                Attributes = attributes,
             };
+        }
+
+        /// <summary>
+        /// Name of a custom attribute's type, or null when the constructor shape is not
+        /// one of the common resolvable forms (TypeRef/TypeDef parent, MethodDef ctor).
+        /// </summary>
+        internal static string GetCustomAttributeName(MetadataReader md, CustomAttributeHandle handle)
+        {
+            try
+            {
+                var ca = md.GetCustomAttribute(handle);
+                switch (ca.Constructor.Kind)
+                {
+                    case HandleKind.MemberReference:
+                        var mr = md.GetMemberReference((MemberReferenceHandle)ca.Constructor);
+                        switch (mr.Parent.Kind)
+                        {
+                            case HandleKind.TypeReference:
+                                var tr = md.GetTypeReference((TypeReferenceHandle)mr.Parent);
+                                return FormatTypeName(md.GetString(tr.Namespace), md.GetString(tr.Name));
+                            case HandleKind.TypeDefinition:
+                                return GetDottedFullTypeName(md, md.GetTypeDefinition((TypeDefinitionHandle)mr.Parent));
+                            default:
+                                return null;
+                        }
+                    case HandleKind.MethodDefinition:
+                        var ctor = md.GetMethodDefinition((MethodDefinitionHandle)ca.Constructor);
+                        var ownerHandle = ctor.GetDeclaringType();
+                        if (ownerHandle.IsNil) return null;
+                        return GetDottedFullTypeName(md, md.GetTypeDefinition(ownerHandle));
+                    default:
+                        return null;
+                }
+            }
+            catch
+            {
+                return null;
+            }
         }
 
         private static string GetTypeKind(MetadataReader md, TypeDefinition td)

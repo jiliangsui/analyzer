@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Text.Encodings.Web;
 using System.Text.Json;
 using DnSpy.Analyzer.Core;
 using DnSpy.Analyzer.Core.Models;
@@ -27,11 +28,21 @@ namespace DnSpy.Analyzer.Cli
         static readonly JsonSerializerOptions JsonOpts = new()
         {
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-            WriteIndented = false
+            WriteIndented = false,
+            // Keep non-ASCII (Chinese identifiers/strings) and plain punctuation readable
+            // instead of \uXXXX-escaping everything; output is a terminal/pipe, not HTML.
+            Encoder = JavaScriptEncoder.UnsafeRelaxedJsonEscaping
         };
+
+        /// <summary>Exit code for the current invocation: 0 success, 1 any failure.</summary>
+        static int _exitCode;
 
         static int Main(string[] args)
         {
+            // Decompiled code and metadata names are full of non-ASCII; make piped
+            // output UTF-8 instead of the legacy console code page.
+            try { Console.OutputEncoding = System.Text.Encoding.UTF8; } catch { /* redirected stream */ }
+
             if (args.Length == 0 || args[0] == "help" || args[0] == "--help" || args[0] == "-h")
             {
                 PrintHelp();
@@ -54,11 +65,11 @@ namespace DnSpy.Analyzer.Cli
                     "decompile-type" => HandleDecompileType(rest),
                     "check-references" => HandleCheckReferences(rest),
                     "search" => HandleSearch(rest),
-                    _ => Json(AnalysisResult<object>.Fail($"Unknown command: {command}", 0))
+                    _ => Error($"Unknown command: {command}")
                 };
 
                 Console.Out.WriteLine(json);
-                return 0;
+                return _exitCode;
             }
             catch (Exception ex)
             {
@@ -116,16 +127,16 @@ namespace DnSpy.Analyzer.Cli
 
         static string HandleDecompileMethod(string[] args)
         {
-            if (args.Length < 3) return Error("Usage: analyzer decompile-method <path> <type-name> <method-name> [--reference-path <dir>]...");
-            var (path, typeName, methodName, refPaths) = ParseDecompileArgs(args);
+            if (args.Length < 3) return Error("Usage: analyzer decompile-method <path> <type-name> <method-name> [--signature <text>] [--reference-path <dir>]...");
+            var (path, typeName, methodName, refPaths, signature) = ParseDecompileArgs(args);
             using var decompiler = new DecompilationHelper(refPaths);
-            return Json(decompiler.DecompileMethod(path, typeName, methodName));
+            return Json(decompiler.DecompileMethod(path, typeName, methodName, signature));
         }
 
         static string HandleDecompileType(string[] args)
         {
             if (args.Length < 2) return Error("Usage: analyzer decompile-type <path> <type-name> [--reference-path <dir>]...");
-            var (path, typeName, _, refPaths) = ParseDecompileArgs(args);
+            var (path, typeName, _, refPaths, _) = ParseDecompileArgs(args);
             using var decompiler = new DecompilationHelper(refPaths);
             return Json(decompiler.DecompileType(path, typeName));
         }
@@ -145,19 +156,25 @@ namespace DnSpy.Analyzer.Cli
         }
 
         /// <summary>
-        /// Parses positional args for the decompile commands while collecting any
-        /// <c>--reference-path &lt;dir&gt;</c> options from anywhere after the positionals.
+        /// Parses positional args for the decompile commands while collecting
+        /// <c>--reference-path &lt;dir&gt;</c> and <c>--signature &lt;text&gt;</c> options
+        /// from anywhere after the positionals.
         /// </summary>
-        static (string Path, string TypeName, string MemberName, List<string> RefPaths) ParseDecompileArgs(string[] args)
+        static (string Path, string TypeName, string MemberName, List<string> RefPaths, string Signature) ParseDecompileArgs(string[] args)
         {
             var positional = new List<string>();
             var refPaths = new List<string>();
+            string signature = null;
 
             for (int i = 0; i < args.Length; i++)
             {
                 if (args[i] == "--reference-path" && i + 1 < args.Length)
                 {
                     refPaths.Add(args[++i]);
+                }
+                else if (args[i] == "--signature" && i + 1 < args.Length)
+                {
+                    signature = args[++i];
                 }
                 else
                 {
@@ -169,7 +186,8 @@ namespace DnSpy.Analyzer.Cli
                 positional.Count > 0 ? positional[0] : "",
                 positional.Count > 1 ? positional[1] : "",
                 positional.Count > 2 ? positional[2] : "",
-                refPaths);
+                refPaths,
+                signature);
         }
 
         static string HandleSearch(string[] args)
@@ -200,11 +218,17 @@ namespace DnSpy.Analyzer.Cli
 
         // ========== Helpers ==========
 
-        static string Json<T>(AnalysisResult<T> result) =>
-            JsonSerializer.Serialize(result, JsonOpts);
+        static string Json<T>(AnalysisResult<T> result)
+        {
+            _exitCode = result.Success ? 0 : 1;
+            return JsonSerializer.Serialize(result, JsonOpts);
+        }
 
-        static string Error(string msg) =>
-            JsonSerializer.Serialize(new { success = false, error = msg, elapsedMs = 0 }, JsonOpts);
+        static string Error(string msg)
+        {
+            _exitCode = 1;
+            return JsonSerializer.Serialize(new AnalysisResult<object> { Success = false, Error = msg, ElapsedMs = 0 }, JsonOpts);
+        }
 
         static void PrintHelp()
         {
@@ -231,8 +255,11 @@ COMMANDS:
   get-methods <path> <type-name>
     List all methods of a type with signatures.
 
-  decompile-method <path> <type-name> <method-name> [--reference-path <dir>]...
-    Decompile a method to C# source code.
+  decompile-method <path> <type-name> <method-name> [--signature <text>] [--reference-path <dir>]...
+    Decompile a method to C# source code. When <method-name> has several
+    overloads the command fails and lists all candidate signatures; pass
+    --signature to pick one (case-insensitive substring match on the rendered
+    signature, e.g. --signature "Int32").
 
   decompile-type <path> <type-name> [--reference-path <dir>]...
     Decompile an entire type to C# source code.

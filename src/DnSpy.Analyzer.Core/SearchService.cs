@@ -37,9 +37,9 @@ namespace DnSpy.Analyzer.Core
                 {
                     if (results.Count >= maxResults) break;
                     var td = md.GetTypeDefinition(tdh);
-                    var ns = md.GetString(td.Namespace);
-                    var name = md.GetString(td.Name);
-                    var fullName = (string.IsNullOrEmpty(ns) ? "" : ns + ".") + name;
+                    // Nested types keep their declaring chain ("Ns.Outer.Nested") so results
+                    // can be fed straight into get-type / decompile-method.
+                    var fullName = AssemblyAnalyzer.GetDottedFullTypeName(md, td);
 
                     if (fullName.IndexOf(query, StringComparison.OrdinalIgnoreCase) >= 0)
                     {
