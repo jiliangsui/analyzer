@@ -17,7 +17,7 @@ namespace DnSpy.Analyzer.Cli
     ///   analyzer list-types <path> [--namespace <ns>] [--offset <n>] [--limit <n>]
     ///   analyzer get-type <path> <type-name>
     ///   analyzer get-methods <path> <type-name>
-    ///   analyzer decompile-method <path> <type-name> <method-name> [--reference-path <dir>]...
+    ///   analyzer decompile-method <path> <type-name> <method-name> [--signature <text>] [--reference-path <dir>]...
     ///   analyzer decompile-type <path> <type-name> [--reference-path <dir>]...
     ///   analyzer check-references <path> [--reference-path <dir>]...
     ///   analyzer search <path> <query> [--kind <kind>] [--max-results <n>]
@@ -259,7 +259,7 @@ COMMANDS:
     Decompile a method to C# source code. When <method-name> has several
     overloads the command fails and lists all candidate signatures; pass
     --signature to pick one (case-insensitive substring match on the rendered
-    signature, e.g. --signature "Int32").
+    signature, e.g. --signature ""Int32"").
 
   decompile-type <path> <type-name> [--reference-path <dir>]...
     Decompile an entire type to C# source code.
@@ -291,8 +291,15 @@ EXAMPLES:
   analyzer search ./game/Managed/Assembly-CSharp.dll health --kind field
 
 OUTPUT:
-  All results are JSON written to stdout. Errors go to stderr.
-  Exit code 0 = success, 1 = error.
+  All results are JSON on stdout — including failures as {""success"":false,""error"":...}.
+  Unexpected internal errors go to stderr as JSON.
+  Exit code 0 = success, 1 = any failure (usage errors, unknown command, not found).
+  Non-ASCII text (e.g. Chinese strings) is emitted as raw UTF-8, not \uXXXX escapes.
+
+NESTED TYPES:
+  Use the dotted form everywhere: Ns.Outer.Nested (list-types outputs this form in
+  fullName; search results can be pasted directly). decompile-type also accepts the
+  ILSpy form Ns.Outer/Nested.
 ");
         }
     }
