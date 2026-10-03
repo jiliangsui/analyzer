@@ -94,8 +94,8 @@ analyzer scan-folder E:/game/Managed
 | `list-types` | `<path>` | `--namespace`, `--offset`, `--limit` | 类型列表（支持过滤+分页） |
 | `get-type` | `<path> <type-name>` | — | 类型详情（基类、接口、全部成员） |
 | `get-methods` | `<path> <type-name>` | — | 方法签名列表 |
-| `decompile-method` | `<path> <type-name> <method-name>` | `--reference-path` | **反编译方法为 C# 源码** |
-| `decompile-type` | `<path> <type-name>` | `--reference-path` | 反编译整个类型 |
+| `decompile-method` | `<path> <type-name> <method-name>` | `--reference-path`, `--signature` | **反编译方法为 C# 源码**（多重重载时需 `--signature` 消歧） |
+| `decompile-type` | `<path> <type-name>` | `--reference-path` | 反编译整个类型（含嵌套子类型） |
 | `check-references` | `<path>` | `--reference-path` | **检查依赖能否解析，列出探测目录与缺失项** |
 | `search` | `<path> <query>` | `--kind`, `--max-results` | 搜索类型/方法/字段/属性 |
 | `help` | — | — | 显示帮助信息 |
@@ -170,17 +170,38 @@ analyzer decompile-method ./Managed/Assembly-CSharp.dll Game.Core.PlayerControll
 analyzer search ./Managed/Assembly-CSharp.dll health --kind field
 ```
 
+### 重载消歧（`--signature`）
+
+`decompile-method` 按方法名匹配。当目标方法有多个重载时，命令会**失败并列出全部候选签名**，而不是静默反编译第一个。用 `--signature` 做消歧（对渲染出的签名的**大小写不敏感子串匹配**）：
+
+```bash
+# MathUtils.Clamp 有 10 个重载，直接反编译会列出候选
+analyzer decompile-method ./Managed/GameData.Utilities.dll GameData.Utilities.MathUtils Clamp
+
+# 用参数类型缩小范围，精确命中 Int32 版本
+analyzer decompile-method ./Managed/GameData.Utilities.dll GameData.Utilities.MathUtils Clamp \
+  --signature "(Int32, Int32, Int32)"
+```
+
+### 嵌套类型
+
+嵌套类型一律使用**点分全名**：`Ns.Outer.Nested`。`list-types` 的 `fullName` 与 `search` 结果都输出这个形式，可直接粘贴给 `get-type` / `decompile-method` / `decompile-type`（`decompile-type` 也兼容 ILSpy 的 `Ns.Outer/Nested` 写法）。
+
 ### 输出格式
 
-所有结果输出到 **stdout**，错误输出到 **stderr**，统一 JSON：
+所有结果（含失败）输出到 **stdout**，统一 JSON；意外内部错误输出到 **stderr**：
 
 ```json
 // 成功
 {"success":true,"data":{...},"elapsedMs":12,"error":null}
 
-// 失败
+// 失败（结构化失败，不是崩溃）
 {"success":false,"data":null,"elapsedMs":5,"error":"File not found: xxx"}
 ```
+
+**退出码**：`0` = 成功；`1` = 任何失败（用法错误、未知命令、目标不存在等），便于脚本与 Agent 判断。
+
+**编码**：stdout 强制 UTF-8，中文等非 ASCII 字符原样输出（不做 `\uXXXX` 转义）。
 
 ### AI Agent 调用
 

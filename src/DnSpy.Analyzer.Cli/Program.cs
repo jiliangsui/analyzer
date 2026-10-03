@@ -160,11 +160,11 @@ namespace DnSpy.Analyzer.Cli
         /// <c>--reference-path &lt;dir&gt;</c> and <c>--signature &lt;text&gt;</c> options
         /// from anywhere after the positionals.
         /// </summary>
-        static (string Path, string TypeName, string MemberName, List<string> RefPaths, string Signature) ParseDecompileArgs(string[] args)
+        static (string Path, string TypeName, string MemberName, List<string> RefPaths, string? Signature) ParseDecompileArgs(string[] args)
         {
             var positional = new List<string>();
             var refPaths = new List<string>();
-            string signature = null;
+            string? signature = null;
 
             for (int i = 0; i < args.Length; i++)
             {

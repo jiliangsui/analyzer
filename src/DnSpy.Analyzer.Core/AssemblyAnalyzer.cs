@@ -540,7 +540,7 @@ namespace DnSpy.Analyzer.Core
         /// Name of a custom attribute's type, or null when the constructor shape is not
         /// one of the common resolvable forms (TypeRef/TypeDef parent, MethodDef ctor).
         /// </summary>
-        internal static string GetCustomAttributeName(MetadataReader md, CustomAttributeHandle handle)
+        internal static string? GetCustomAttributeName(MetadataReader md, CustomAttributeHandle handle)
         {
             try
             {

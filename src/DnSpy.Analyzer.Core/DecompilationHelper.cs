@@ -180,7 +180,7 @@ namespace DnSpy.Analyzer.Core
             }
         }
 
-        public AnalysisResult<DecompileResult> DecompileMethod(string path, string typeFullName, string methodName, string signatureFilter = null)
+        public AnalysisResult<DecompileResult> DecompileMethod(string path, string typeFullName, string methodName, string? signatureFilter = null)
         {
             var sw = Stopwatch.StartNew();
             try
@@ -262,8 +262,18 @@ namespace DnSpy.Analyzer.Core
                     return AnalysisResult<DecompileResult>.Fail($"Type not found: {typeFullName}", sw.ElapsedMilliseconds);
 
                 var decompiler = CreateDecompiler(path);
-                var ilSpyName = AssemblyAnalyzer.GetILSpyFullTypeName(md, md.GetTypeDefinition(typeHandle));
-                var code = decompiler.DecompileTypeAsString(new FullTypeName(ilSpyName));
+
+                // Decompile by resolved handle instead of DecompileTypeAsString(FullTypeName):
+                // the type-system lookup by name fails for nested types, while the handle
+                // route shares the same mechanism as decompile-method. Nested child types
+                // are included to mirror DecompileTypeAsString's behavior.
+                var entities = new List<EntityHandle> { typeHandle };
+                foreach (var nth in md.TypeDefinitions)
+                {
+                    if (md.GetTypeDefinition(nth).GetDeclaringType() == typeHandle)
+                        entities.Add(nth);
+                }
+                var code = decompiler.Decompile(entities).ToString();
 
                 return AnalysisResult<DecompileResult>.Ok(new DecompileResult
                 {
