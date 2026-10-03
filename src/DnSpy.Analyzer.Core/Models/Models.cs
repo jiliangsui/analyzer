@@ -141,4 +141,27 @@ namespace DnSpy.Analyzer.Core.Models
         public string MethodName { get; set; } = "";
         public string TypeName { get; set; } = "";
     }
+
+    /// <summary>
+    /// Resolution status of a single assembly reference of the target assembly.
+    /// </summary>
+    public class ReferenceStatus
+    {
+        public string Name { get; set; } = "";
+        public string Version { get; set; } = "";
+        public bool Resolved { get; set; }
+        public string? ResolvedPath { get; set; }
+    }
+
+    /// <summary>
+    /// Report of which referenced assemblies could be located, and where the resolver looked.
+    /// </summary>
+    public class ReferenceReport
+    {
+        public string AssemblyPath { get; set; } = "";
+        /// <summary>Directories the resolver probes (target dir + --reference-path + runtime dir).</summary>
+        public List<string> ProbedDirectories { get; set; } = new();
+        public List<ReferenceStatus> References { get; set; } = new();
+        public int UnresolvedCount { get; set; }
+    }
 }

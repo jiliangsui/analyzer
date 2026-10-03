@@ -94,10 +94,56 @@ analyzer scan-folder E:/game/Managed
 | `list-types` | `<path>` | `--namespace`, `--offset`, `--limit` | 类型列表（支持过滤+分页） |
 | `get-type` | `<path> <type-name>` | — | 类型详情（基类、接口、全部成员） |
 | `get-methods` | `<path> <type-name>` | — | 方法签名列表 |
-| `decompile-method` | `<path> <type-name> <method-name>` | — | **反编译方法为 C# 源码** |
-| `decompile-type` | `<path> <type-name>` | — | 反编译整个类型 |
+| `decompile-method` | `<path> <type-name> <method-name>` | `--reference-path` | **反编译方法为 C# 源码** |
+| `decompile-type` | `<path> <type-name>` | `--reference-path` | 反编译整个类型 |
+| `check-references` | `<path>` | `--reference-path` | **检查依赖能否解析，列出探测目录与缺失项** |
 | `search` | `<path> <query>` | `--kind`, `--max-results` | 搜索类型/方法/字段/属性 |
 | `help` | — | — | 显示帮助信息 |
+
+### 依赖解析（`--reference-path`）
+
+反编译需要能**找到被引用的程序集**。默认只探测目标 DLL 自己所在的目录——这在实际场景里往往不够：
+
+- Unity 游戏的 DLL 常集中在 `Managed/` 目录，但如果你只把 `Assembly-CSharp.dll` 拷出来单独分析，`UnityEngine.dll` 就找不到了；
+- 反编译会直接失败，报 `Failed to resolve assembly: UnityEngine, ...`。
+
+用 `--reference-path` 追加探测目录（可重复指定）：
+
+```bash
+# 追加一个目录
+analyzer decompile-type ./dump/Assembly-CSharp.dll BaseData --reference-path ./game/Managed
+
+# 追加多个目录
+analyzer decompile-type ./dump/Assembly-CSharp.dll BaseData \
+  --reference-path ./game/Managed --reference-path ./extra-libs
+```
+
+**先诊断再反编译**。遇到反编译失败时，用 `check-references` 看看到底缺什么、该往哪指：
+
+```bash
+analyzer check-references ./dump/Assembly-CSharp.dll --reference-path ./game/Managed
+```
+
+```json
+{
+  "success": true,
+  "data": {
+    "probedDirectories": [
+      "C:\\dump",
+      "C:\\game\\Managed"
+    ],
+    "references": [
+      { "name": "mscorlib", "version": "2.0.0.0", "resolved": true, "resolvedPath": "..." },
+      { "name": "UnityEngine", "version": "0.0.0.0", "resolved": true, "resolvedPath": "..." },
+      { "name": "DOTween", "version": "1.0.0.0", "resolved": false, "resolvedPath": null }
+    ],
+    "unresolvedCount": 1
+  },
+  "elapsedMs": 34
+}
+```
+
+探测顺序固定为：**目标 DLL 所在目录 → 所有 `--reference-path` 目录 → 当前运行时框架目录**（用于补上 `mscorlib` / `System.*`）。
 
 ### 完整工作流示例
 
@@ -108,16 +154,19 @@ analyzer scan-folder ./Managed
 # 2️⃣ 分析主程序集结构
 analyzer analyze-assembly ./Managed/Assembly-CSharp.dll
 
-# 3️⃣ 浏览特定命名空间下的类型
+# 3️⃣ 反编译前先确认依赖齐全
+analyzer check-references ./Managed/Assembly-CSharp.dll --reference-path ./Managed
+
+# 4️⃣ 浏览特定命名空间下的类型
 analyzer list-types ./Managed/Assembly-CSharp.dll --namespace Game.Core
 
-# 4️⃣ 深入了解某个类
+# 5️⃣ 深入了解某个类
 analyzer get-type ./Managed/Assembly-CSharp.dll Game.Core.PlayerController
 
-# 5️⃣ 反编译关键方法
+# 6️⃣ 反编译关键方法
 analyzer decompile-method ./Managed/Assembly-CSharp.dll Game.Core.PlayerController TakeDamage
 
-# 6️⃣ 搜索特定关键词
+# 7️⃣ 搜索特定关键词
 analyzer search ./Managed/Assembly-CSharp.dll health --kind field
 ```
 
@@ -141,6 +190,8 @@ Agent 直接通过 bash 调用，无需任何配置：
 scan-folder  →  得到 DLL 列表
     ↓
 analyze-assembly  →  程序集结构
+    ↓
+check-references  →  确认依赖齐全（缺了就加 --reference-path）
     ↓
 list-types --namespace Game.Core  →  浏览类型
     ↓
@@ -215,10 +266,10 @@ analyzer/
 │   ├── DnSpy.Analyzer.Core/       # 核心分析库
 │   │   ├── Models/                # 数据模型
 │   │   ├── AssemblyAnalyzer.cs    # 程序集扫描/分析
-│   │   ├── DecompilationHelper.cs # C# 反编译
+│   │   ├── DecompilationHelper.cs # C# 反编译 + 依赖解析
 │   │   └── SearchService.cs       # 搜索服务
 │   └── DnSpy.Analyzer.Cli/        # CLI 命令行工具
-│       └── Program.cs             # 入口 + 8 个子命令
+│       └── Program.cs             # 入口 + 9 个子命令
 ├── build.ps1                      # 构建脚本
 ├── .gitignore
 ├── CONTRIBUTING.md                # 贡献指南

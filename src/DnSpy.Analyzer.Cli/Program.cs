@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Text.Json;
 using DnSpy.Analyzer.Core;
@@ -15,8 +16,9 @@ namespace DnSpy.Analyzer.Cli
     ///   analyzer list-types <path> [--namespace <ns>] [--offset <n>] [--limit <n>]
     ///   analyzer get-type <path> <type-name>
     ///   analyzer get-methods <path> <type-name>
-    ///   analyzer decompile-method <path> <type-name> <method-name>
-    ///   analyzer decompile-type <path> <type-name>
+    ///   analyzer decompile-method <path> <type-name> <method-name> [--reference-path <dir>]...
+    ///   analyzer decompile-type <path> <type-name> [--reference-path <dir>]...
+    ///   analyzer check-references <path> [--reference-path <dir>]...
     ///   analyzer search <path> <query> [--kind <kind>] [--max-results <n>]
     ///   analyzer help
     /// </summary>
@@ -50,6 +52,7 @@ namespace DnSpy.Analyzer.Cli
                     "get-methods" => HandleGetMethods(rest),
                     "decompile-method" => HandleDecompileMethod(rest),
                     "decompile-type" => HandleDecompileType(rest),
+                    "check-references" => HandleCheckReferences(rest),
                     "search" => HandleSearch(rest),
                     _ => Json(AnalysisResult<object>.Fail($"Unknown command: {command}", 0))
                 };
@@ -113,16 +116,60 @@ namespace DnSpy.Analyzer.Cli
 
         static string HandleDecompileMethod(string[] args)
         {
-            if (args.Length < 3) return Error("Usage: analyzer decompile-method <path> <type-name> <method-name>");
-            using var decompiler = new DecompilationHelper();
-            return Json(decompiler.DecompileMethod(args[0], args[1], args[2]));
+            if (args.Length < 3) return Error("Usage: analyzer decompile-method <path> <type-name> <method-name> [--reference-path <dir>]...");
+            var (path, typeName, methodName, refPaths) = ParseDecompileArgs(args);
+            using var decompiler = new DecompilationHelper(refPaths);
+            return Json(decompiler.DecompileMethod(path, typeName, methodName));
         }
 
         static string HandleDecompileType(string[] args)
         {
-            if (args.Length < 2) return Error("Usage: analyzer decompile-type <path> <type-name>");
-            using var decompiler = new DecompilationHelper();
-            return Json(decompiler.DecompileType(args[0], args[1]));
+            if (args.Length < 2) return Error("Usage: analyzer decompile-type <path> <type-name> [--reference-path <dir>]...");
+            var (path, typeName, _, refPaths) = ParseDecompileArgs(args);
+            using var decompiler = new DecompilationHelper(refPaths);
+            return Json(decompiler.DecompileType(path, typeName));
+        }
+
+        static string HandleCheckReferences(string[] args)
+        {
+            if (args.Length < 1) return Error("Usage: analyzer check-references <path> [--reference-path <dir>]...");
+            var path = args[0];
+            var refPaths = new List<string>();
+            for (int i = 1; i < args.Length; i++)
+            {
+                if (args[i] == "--reference-path" && i + 1 < args.Length)
+                    refPaths.Add(args[++i]);
+            }
+            using var decompiler = new DecompilationHelper(refPaths);
+            return Json(decompiler.CheckReferences(path));
+        }
+
+        /// <summary>
+        /// Parses positional args for the decompile commands while collecting any
+        /// <c>--reference-path &lt;dir&gt;</c> options from anywhere after the positionals.
+        /// </summary>
+        static (string Path, string TypeName, string MemberName, List<string> RefPaths) ParseDecompileArgs(string[] args)
+        {
+            var positional = new List<string>();
+            var refPaths = new List<string>();
+
+            for (int i = 0; i < args.Length; i++)
+            {
+                if (args[i] == "--reference-path" && i + 1 < args.Length)
+                {
+                    refPaths.Add(args[++i]);
+                }
+                else
+                {
+                    positional.Add(args[i]);
+                }
+            }
+
+            return (
+                positional.Count > 0 ? positional[0] : "",
+                positional.Count > 1 ? positional[1] : "",
+                positional.Count > 2 ? positional[2] : "",
+                refPaths);
         }
 
         static string HandleSearch(string[] args)
@@ -184,11 +231,15 @@ COMMANDS:
   get-methods <path> <type-name>
     List all methods of a type with signatures.
 
-  decompile-method <path> <type-name> <method-name>
-    Decompile a method to C# source code (requires ICSharpCode.Decompiler).
+  decompile-method <path> <type-name> <method-name> [--reference-path <dir>]...
+    Decompile a method to C# source code.
 
-  decompile-type <path> <type-name>
+  decompile-type <path> <type-name> [--reference-path <dir>]...
     Decompile an entire type to C# source code.
+
+  check-references <path> [--reference-path <dir>]...
+    Show which referenced assemblies can be resolved, and from where.
+    Use this first when decompilation fails with 'Failed to resolve assembly'.
 
   search <path> <query> [--kind <type|method|field|property>] [--max-results <n>]
     Search for types, methods, fields, or properties by name.
@@ -196,12 +247,20 @@ COMMANDS:
   help
     Show this help.
 
+REFERENCE PATHS:
+  Decompiling Unity / .NET Framework assemblies usually needs the sibling DLLs
+  (UnityEngine.dll, mscorlib.dll, ...) to be discoverable. Pass one or more
+  --reference-path options to add probe directories; repeat the option for
+  multiple directories. The target assembly's own directory is always probed.
+
 EXAMPLES:
   analyzer scan-folder ./game/Managed
   analyzer analyze-assembly ./game/Managed/Assembly-CSharp.dll
   analyzer list-types ./game/Managed/Assembly-CSharp.dll --namespace Game.Core
   analyzer get-type ./game/Managed/Assembly-CSharp.dll Game.Core.PlayerController
+  analyzer check-references ./game/Managed/Assembly-CSharp.dll --reference-path ./game/Managed
   analyzer decompile-method ./game/Managed/Assembly-CSharp.dll Game.Core.PlayerController TakeDamage
+  analyzer decompile-type ./game/Managed/Assembly-CSharp.dll GameSocket --reference-path ./game/Managed
   analyzer search ./game/Managed/Assembly-CSharp.dll health --kind field
 
 OUTPUT:
